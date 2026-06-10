@@ -114,3 +114,44 @@ Das Problem liegt wahrscheinlich an einem oder mehreren dieser Punkte:
 - [ ] Endpoint-Descriptors (Adressen, Paketgrößen, Intervalle)
 - [ ] Isochronous Transfer-Größen → Samplerate berechnen
 - [ ] Vendor-spezifische Control Requests während Betrieb
+
+---
+
+## Optischer Eingang (S/PDIF) — Untersuchung 2026-06-10
+
+### Symptom
+Optische S/PDIF-Quelle angeschlossen und aktiv (44,1 kHz), aber `Audient Optical1 Clock
+Validity` bleibt `off`. Ursache: optischer Port steht im falschen Format (ADAT statt S/PDIF).
+Format-Umschaltung gibt es nur in der Audient-Software (System Panel → DIGITAL IN), nicht als
+UAC2-Standard-Control.
+
+### Bestätigte Fakten
+- **Format-Mismatch, nicht Signal-/Selektionsproblem:** Mit Kabel + aktivem Signal, optische
+  Clock 8 s gehalten → Validity bleibt `off`, Gerät resettet aber NICHT (= Signal kommt an,
+  wird nur nicht als gültig geframed). Ohne Kabel/Signal resettet das Gerät beim Optical-Select.
+- **`amixer cset` auf den Clock-Selector ist gefährlich:** snd-usb-audio handelt die Samplerate
+  neu; bei nicht-gelockter Clock wirft es das Streaming ab → Re-Enumeration. Manipulation daher
+  nur über libusb (Interface 0 claimen, auto-detach).
+- **Schreiben auf Clock-Source-Sample-Freq (Entity 44, CS=1) = Re-Enumeration.** Nie tun.
+
+### Adressierung (bestätigt via lokalem MixiD-Checkout /srv/projects/MixiD)
+Alle Vendor-Controls: `bmRequestType=0x21`, `bRequest=0x01` (SET_CUR),
+`wValue=(CS<<8)|CN`, `wIndex=(EntityID<<8)|0`. Beispiele aus MixiD `driver.h`:
+Mixer-Vol = Entity 60 / CS 1; FU10-Vol = Entity 10 / CS 2; Routing = Entity 51 / CS 6;
+Master/Bools (Dim/Alt/Mono…) = Entity 54; Phase = FU11 / CS 13.
+
+### Negativ-Ergebnisse der Brute-Force (Tool: `id14-tools/id14-probe`)
+Oracle = `optical_clock_valid()` (Entity 44, CS 0x02). Lock-Fenster bis 1,3 s, Reset-Erkennung.
+- Alle Extension Units (62, 50, 51, 52, 54, 55, 60), CS 1–20, CN 0, Werte 0–3 (1/2/4-Byte):
+  **kein Treffer**, 0 Resets (Lauf vollständig gültig).
+- Clock-Entities 44/41, CS 3–20: **keine Controls** (nur Sample-Freq/Validity existieren).
+- Beide USB-Konfigurationen: **identisch**, kein separater S/PDIF-Modus, kein S/PDIF-Terminal (0x0605).
+- MixiD (master + develop + Historie): **kein** Optical/Clock-Befehl.
+
+### Schlussfolgerung
+Der ADAT↔S/PDIF-Schalter ist **kein** UAC2-Klassen-Control. Er nutzt mit hoher Wahrscheinlichkeit
+einen **vendor-spezifischen** Request (anderes `bmRequestType`/`bRequest`). Dieser Raum ist blind
+nicht sicher brute-forcebar. Deterministischer Weg: **USB-Capture des „DIGITAL IN: S/PDIF"-Klicks
+in der Audient-Software (Windows/Mac)** via Wireshark/USBPcap bzw. usbmon → exakten Request
+extrahieren → in `id14ctl` übernehmen. Offene, ungeprüfte Linux-Restoptionen (geringe Trefferchance):
+CN≠0, andere `bRequest`-Werte, vendor `bmRequestType` 0x40/0x41 — nicht empfohlen ohne Capture.
